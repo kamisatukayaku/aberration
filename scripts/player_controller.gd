@@ -53,6 +53,7 @@ func _ready() -> void:
 	var limbs := LimbBag.new()
 	limbs.name = "LimbBag"
 	add_child(limbs)
+	limbs.stock_spares()
 	parts = PartLoadout.new()
 	parts.name = "PartLoadout"
 	add_child(parts)
@@ -153,9 +154,6 @@ func _update_horizontal_velocity(delta: float) -> void:
 func _part_tail_sets_speed() -> bool:
 	if parts == null:
 		return false
-	var bag := get_node_or_null("LimbBag") as LimbBag
-	if bag != null and not bag.equipped_lower.is_empty():
-		return false
 	var lower_id := parts.current_lower().id
 	return lower_id == "water_snake" or lower_id == "fish_tail"
 
@@ -166,6 +164,11 @@ func _update_snake_crawl(wish: Vector3, delta: float) -> void:
 	var speed := move_speed * assembly.get_speed_multiplier() * assembly.get_drive_multiplier()
 	if _part_tail_sets_speed():
 		speed = parts.speed_on(SceneProbe.tags_at(global_position))
+		var phase := assembly.get_locomotion_phase()
+		if parts.current_lower().id == "fish_tail":
+			speed *= 0.82 + absf(sin(phase * 3.0)) * 0.36
+		elif parts.current_lower().id == "water_snake":
+			speed *= 0.9 + sin(phase) * 0.1
 	var target_velocity := wish * speed if crawling else Vector3.ZERO
 	var acceleration := ground_acceleration * assembly.get_acceleration_multiplier() if crawling else ground_deceleration * assembly.get_deceleration_multiplier()
 	var current := Vector3(velocity.x, 0.0, velocity.z)
