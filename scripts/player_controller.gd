@@ -1,6 +1,8 @@
 class_name PlayerController
 extends CharacterBody3D
 
+const MovementConfig := preload("res://scripts/movement_table.gd")
+
 signal air_action_changed(mode: AirAction)
 signal jumped
 signal landed
@@ -36,8 +38,13 @@ enum AirAction {
 @onready var assembly: CharacterAssemblyController = $Assembly
 @onready var collision: CollisionShape3D = $Collision
 
+var health := 100
+var max_health := 100
 var _coyote_remaining := 0.0
 var _jump_buffer_remaining := 0.0
+var _invert_until_msec := 0
+var _slow_until_msec := 0
+var _slow_scale := 1.0
 var _was_grounded := false
 var _is_flying := false
 var parts: PartLoadout
@@ -45,6 +52,7 @@ var parts: PartLoadout
 
 func _ready() -> void:
 	add_to_group("player")
+	_apply_movement_table()
 	floor_snap_length = 0.25
 	floor_max_angle = deg_to_rad(48.0)
 	respawn_position = global_position
@@ -53,6 +61,8 @@ func _ready() -> void:
 	var limbs := LimbBag.new()
 	limbs.name = "LimbBag"
 	add_child(limbs)
+	# 初始肢体也必须进入装备数据源；UI 替换时旧件才能回到背包。
+	limbs.set_starting_loadout(PartCatalog.uppers()[0].id, PartCatalog.lowers()[0].id)
 	limbs.stock_spares()
 	parts = PartLoadout.new()
 	parts.name = "PartLoadout"
@@ -95,6 +105,21 @@ func set_air_action(new_action: AirAction) -> void:
 	air_action_changed.emit(air_action)
 
 
+func _apply_movement_table() -> void:
+	move_speed = MovementConfig.number("body", "move_speed", move_speed)
+	ground_acceleration = MovementConfig.number("body", "ground_acceleration", ground_acceleration)
+	ground_deceleration = MovementConfig.number("body", "ground_deceleration", ground_deceleration)
+	air_control = MovementConfig.number("body", "air_control", air_control)
+	jump_height = MovementConfig.number("body", "jump_height", jump_height)
+	jump_time_to_peak = MovementConfig.number("body", "jump_time_to_peak", jump_time_to_peak)
+	jump_time_to_fall = MovementConfig.number("body", "jump_time_to_fall", jump_time_to_fall)
+	coyote_time = MovementConfig.number("body", "coyote_time", coyote_time)
+	jump_buffer_time = MovementConfig.number("body", "jump_buffer_time", jump_buffer_time)
+	flight_climb_speed = MovementConfig.number("body", "flight_climb_speed", flight_climb_speed)
+	flight_fall_speed = MovementConfig.number("body", "flight_fall_speed", flight_fall_speed)
+	flight_vertical_acceleration = MovementConfig.number("body", "flight_vertical_acceleration", flight_vertical_acceleration)
+
+
 func respawn() -> void:
 	global_position = respawn_position
 	velocity = Vector3.ZERO
@@ -122,8 +147,39 @@ func _update_ground_memory(delta: float) -> void:
 		_jump_buffer_remaining = maxf(_jump_buffer_remaining - delta, 0.0)
 
 
-func _update_horizontal_velocity(delta: float) -> void:
+func read_move_input() -> Vector2:
 	var input_vector := Input.get_vector("move_left", "move_right", "move_forward", "move_back")
+	if Time.get_ticks_msec() < _invert_until_msec:
+		input_vector.x = -input_vector.x
+	return input_vector
+
+
+func hazard_speed_scale() -> float:
+	if Time.get_ticks_msec() >= _slow_until_msec:
+		return 1.0
+	return _slow_scale
+
+
+func take_hit(amount: int) -> void:
+	if amount <= 0:
+		return
+	health = maxi(health - amount, 0)
+	if health == 0:
+		health = max_health
+		respawn()
+
+
+func invert_move(seconds: float) -> void:
+	_invert_until_msec = Time.get_ticks_msec() + int(seconds * 1000.0)
+
+
+func apply_slow(seconds: float, scale: float) -> void:
+	_slow_until_msec = Time.get_ticks_msec() + int(seconds * 1000.0)
+	_slow_scale = scale
+
+
+func _update_horizontal_velocity(delta: float) -> void:
+	var input_vector := read_move_input()
 	if assembly.is_movement_locked():
 		input_vector = Vector2.ZERO
 	var move_axes := _camera_planar_axes()
@@ -166,9 +222,14 @@ func _update_snake_crawl(wish: Vector3, delta: float) -> void:
 		speed = parts.speed_on(SceneProbe.tags_at(global_position))
 		var phase := assembly.get_locomotion_phase()
 		if parts.current_lower().id == "fish_tail":
-			speed *= 0.82 + absf(sin(phase * 3.0)) * 0.36
+			var fish_base := MovementConfig.number("tail_pulse", "fish_base", 0.82)
+			var fish_amp := MovementConfig.number("tail_pulse", "fish_amplitude", 0.36)
+			var fish_freq := MovementConfig.number("tail_pulse", "fish_frequency", 3.0)
+			speed *= fish_base + absf(sin(phase * fish_freq)) * fish_amp
 		elif parts.current_lower().id == "water_snake":
-			speed *= 0.9 + sin(phase) * 0.1
+			var snake_base := MovementConfig.number("tail_pulse", "snake_base", 0.9)
+			var snake_amp := MovementConfig.number("tail_pulse", "snake_amplitude", 0.1)
+			speed *= snake_base + sin(phase) * snake_amp
 	var target_velocity := wish * speed if crawling else Vector3.ZERO
 	var acceleration := ground_acceleration * assembly.get_acceleration_multiplier() if crawling else ground_deceleration * assembly.get_deceleration_multiplier()
 	var current := Vector3(velocity.x, 0.0, velocity.z)
